@@ -1,0 +1,18 @@
+[package]
+name = "walk-assistant"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rlua = "0.19.4"
+eframe = "0.26"
+egui = "0.26"
+egui_plot = "0.26"
+serialport = "4.3.0"
+chrono = "0.4.34"
+base64 = "0.13.0"
+rfd = "0.5"
+image = "0.23.14"
+
+[build-dependencies]
+winres = "0.1"
