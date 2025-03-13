@@ -146,6 +146,7 @@ pub fn render_ui(app: &mut SerialAssistant, ctx: &egui::Context) {
                 ui.label("1. 数据格式: ");
                 ui.label("   - 协议:AA + 数据长度(通道号 + 数据长度) + 通道号(0-9,大于9不绘制曲线)+ 4字节数据 + 4字节数据 + ...");
                 ui.label("   - 包含固定协议头AA,数据长度,通道号和数据值");
+                ui.label("   - 协议中FRAME_LENGT是整帧长度,是数据长度加2");
                 ui.label("   - 每个数据点的字节数BYTES_PER_POINT固定4字节");
                 ui.label("   - 数据类型根据实际情况DATA_TYPE可选: 'int' 或 'float'");
                 ui.add_space(8.0);
@@ -221,7 +222,7 @@ fn render_top_controls(app: &mut SerialAssistant, ui: &mut egui::Ui, available_s
                             }
                         } else {
                             if ui.button("关闭串口").clicked() {
-                                app.port_handle = None;
+                                app.close_port();
                             }
                         }
                         
@@ -229,11 +230,18 @@ fn render_top_controls(app: &mut SerialAssistant, ui: &mut egui::Ui, available_s
                             app.ports = serialport::available_ports().unwrap_or_default();
                         }
                     });
+
                     ui.horizontal(|ui| {
+                          
                         egui::ComboBox::from_label("波特率")
-                            .selected_text(app.selected_baud.to_string())
+                            .selected_text(if app.selected_baud == 0 {
+                                "自定义...".to_string()
+                            } else {
+                                app.selected_baud.to_string()
+                            })
                             .width(80.0)
                             .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut app.selected_baud, 0, "自定义...");
                                 for &rate in &app.baud_rates {
                                     ui.selectable_value(
                                         &mut app.selected_baud,
@@ -243,6 +251,23 @@ fn render_top_controls(app: &mut SerialAssistant, ui: &mut egui::Ui, available_s
                                 }
                             });
 
+                        if app.selected_baud == 0 {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut app.custom_baud_text)
+                                    .desired_width(80.0)
+                                    .hint_text("输入波特率")
+                            );
+                            
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                if let Ok(baud) = app.custom_baud_text.parse::<u32>() {
+                                    if baud > 0 {
+                                        app.selected_baud = baud;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
                         egui::ComboBox::from_label("数据位")
                             .selected_text(format!("{:?}", app.data_bits))
                             .width(60.0)
@@ -302,7 +327,7 @@ fn render_send_area(app: &mut SerialAssistant, ui: &mut egui::Ui, ctx: &egui::Co
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut app.auto_send_interval)
                             .speed(100)
-                            .clamp_range(10..=60000)
+                            .clamp_range(1..=600000)
                             .prefix("间隔: ")
                             .suffix("ms"));
                     });

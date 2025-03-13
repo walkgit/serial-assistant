@@ -3,18 +3,19 @@ use crate::ui;
 use crate::utils;
 use rfd::FileDialog;
 use eframe::egui;
-use serialport::{DataBits, SerialPort};
+use serialport::{DataBits};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::io::{Read, Write};  
 use rlua::Lua;
-
+use crate::serial::SerialPortHandle;
+// 在 SerialAssistant 结构体中添加新字段
 pub struct SerialAssistant {
     pub ports: Vec<serialport::SerialPortInfo>,
     pub selected_port: String,
     pub baud_rates: Vec<u32>,
     pub selected_baud: u32,
-    pub port_handle: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
+    pub port_handle: Option<SerialPortHandle>,  // 修改类型
     pub received_data: String,
     pub send_data: String,
     pub is_hex_display: bool,
@@ -33,8 +34,6 @@ pub struct SerialAssistant {
     pub received_data_shared: Arc<Mutex<String>>,
     pub received_buffer: Vec<u8>,
     pub auto_scroll: bool,
-    pub show_timestamp: bool,
-    pub auto_newline: bool,  // 新增字段：自动换行
     pub show_raw_data: bool,
     pub status_message: String,
     pub last_stats_update: Instant,
@@ -54,6 +53,7 @@ pub struct SerialAssistant {
     pub tcp_stream: Option<Arc<Mutex<std::net::TcpStream>>>,
     pub tcp_connected: bool,
     pub show_help: bool, 
+    pub custom_baud_text: String,
 }
 
 impl Default for SerialAssistant {
@@ -82,8 +82,6 @@ impl Default for SerialAssistant {
             received_data_shared: Arc::new(Mutex::new(String::new())),
             received_buffer: Vec::new(),
             auto_scroll: true,
-            show_timestamp: false,
-            auto_newline: false,  // 默认不自动换行
             show_raw_data: false,
             status_message: String::new(),
             last_stats_update: Instant::now(),
@@ -103,19 +101,27 @@ impl Default for SerialAssistant {
             tcp_stream: None,
             tcp_connected: false,
             show_help: false, 
+            custom_baud_text: String::from("256000")
         }
     }
 }
 
 impl SerialAssistant {
     // 更新状态信息
-    pub fn update_status(&mut self) {
-        self.status_message = format!(
-            "串口: {} | 波特率: {} | 收发速率: {:.1} KB/s",
+    pub fn update_status(&mut self) {         
+        if self.tcp_enabled == true {
+            self.status_message = format!("串口: {} {}|状态: {}| 收发速率: {:.1} KB/s",
+            self.tcp_address,
+            self.tcp_port,
+            if self.tcp_connected { "已连接" } else { "未连接" },
+            self.bytes_per_second / 1024.0);           
+        } else {
+            self.status_message = format!("串口: {}|状态: {}| 波特率: {} | 收发速率: {:.1} KB/s",
             self.selected_port,
+            if self.port_handle.is_some() { "已打开" } else { "未打开" },
             self.selected_baud,
-            self.bytes_per_second / 1024.0
-        );
+            self.bytes_per_second / 1024.0);
+        }        
     }
 
     // 计算传输速率
@@ -142,7 +148,7 @@ impl SerialAssistant {
                     
                     // 将原始数据转换为字符串形式
                     let raw_data_string = String::from_utf8_lossy(data);
-                    let _ = writeln!(file, "[{}] {}: 原始数据字符串: {}", timestamp, direction, raw_data_string);
+                    let _ = writeln!(file, "[{}] {}: raw_data: {}", timestamp, direction, raw_data_string);
                     
                     let _ = writeln!(file, "[{}] {}: {}", timestamp, direction, hex_data);
                 }
@@ -151,24 +157,48 @@ impl SerialAssistant {
     }
 
     pub fn open_port(&mut self) -> bool {
-        // 初始化Lua环境
-        if self.lua_state.is_none() {
-            let lua = Lua::new();
-    
-            // 尝试加载外部Lua脚本文件
-            if let Err(e) = lua.context(|ctx| {
-                let script_content = std::fs::read_to_string(&self.lua_script_path)
-                    .expect("无法读取Lua脚本文件");
-                ctx.load(&script_content).exec()
-            }) {
-                println!("Lua脚本加载失败: {}", e);
-                return false;
-            }
-            
-            self.lua_state = Some(lua);
-            println!("Lua环境初始化成功");
+        // 检查是否选择了串口
+        if self.selected_port.is_empty() {
+            println!("未选择串口");
+            return false;
         }
 
+        // 处理自定义波特率
+        if self.selected_baud == 0 {
+            if let Ok(baud) = self.custom_baud_text.parse::<u32>() {
+                if baud > 0 {
+                    self.selected_baud = baud;
+                } else {
+                    println!("无效的波特率值");
+                    return false;
+                }
+            } else {
+                println!("波特率解析失败");
+                return false;
+            }
+        }
+
+        // 确保之前的串口已经完全关闭并释放资源
+        if self.port_handle.is_some() {
+            if let Some(port) = &self.port_handle {
+                if let Ok(port) = port.try_lock() {  // 移除 mut
+                    let _ = port.clear(serialport::ClearBuffer::All);
+                }
+            }
+            self.port_handle.take();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        // 刷新可用串口列表
+        self.ports = serialport::available_ports().unwrap_or_default();
+        
+        // 验证选择的串口是否在可用列表中
+        if !self.ports.iter().any(|p| p.port_name == self.selected_port) {
+            println!("选择的串口不可用: {}", self.selected_port);
+            return false;
+        }
+        
+        println!("正在打开串口: {} 波特率: {}", self.selected_port, self.selected_baud);
         if let Some(port_handle) = crate::serial::open_port(
             &self.selected_port,
             self.selected_baud,
@@ -176,12 +206,32 @@ impl SerialAssistant {
             self.stop_bits,
             self.parity,
             Arc::clone(&self.received_data_shared),
-            self.show_timestamp,
-            self.auto_newline
         ) {
             self.port_handle = Some(port_handle);
+            println!("串口打开成功");
             true
         } else {
+            println!("串口打开失败");
+            false
+        }
+    }
+
+    // 修复 close_port 函数
+    pub fn close_port(&mut self) -> bool {
+        if let Some(port_handle) = self.port_handle.take() {
+            crate::serial::close_port(port_handle);
+            
+            // 重置相关状态
+            self.bytes_received = 0;
+            self.bytes_sent = 0;
+            self.bytes_per_second = 0.0;
+            self.packet_buffer.clear();
+            self.received_buffer.clear();
+            
+            println!("串口已关闭");
+            true
+        } else {
+            println!("串口未打开");
             false
         }
     }
@@ -206,17 +256,17 @@ impl SerialAssistant {
     }
 
     pub fn process_received_data(&mut self, data: &[u8]) {
-        println!("接收到的数据: {:02X?}", data);
-        
         // 将数据添加到缓冲区
         self.packet_buffer.extend_from_slice(data);
-        self.bytes_received += data.len();
+        self.bytes_received += data.len();        
+       
+        println!("接收完成，处理数据: {:02X?}", self.packet_buffer);
         
         // TCP模式和串口模式都可以使用波形显示功能
         if self.plot_visible {
-            // 使用Lua脚本解析数据帧
-            if let Some(lua) = &self.lua_state {
-                let mut frames_to_process = Vec::new(); // 创建一个临时缓冲区来存储帧
+        // 使用Lua脚本解析数据帧
+        if let Some(lua) = &self.lua_state {
+            let mut frames_to_process = Vec::new(); // 创建一个临时缓冲区来存储帧
         
                 if let Err(e) = lua.context(|ctx| {
                     let frame_length: usize = ctx.globals().get("FRAME_LENGTH")?;
@@ -246,6 +296,7 @@ impl SerialAssistant {
             self.packet_buffer.clear();
         }
     }
+
     fn process_frame(&mut self, frame: &[u8]) {
         if let Some(lua) = &self.lua_state {
             if let Err(e) = lua.context(|ctx| {
@@ -346,7 +397,7 @@ impl eframe::App for SerialAssistant {
                         .collect();
                     received.clear();
                 }
-            }
+            }            
         }
         
         // 然后处理数据
@@ -359,25 +410,16 @@ impl eframe::App for SerialAssistant {
             // 更新显示区域
             if self.is_hex_display {
                 let mut hex_string = String::new();
-                let mut _byte_count = self.received_data.matches(' ').count();  // 修改变量名
-                
-                // 处理每个字节
-                for (_i, &byte) in data_to_process.iter().enumerate() {  // 修改变量名
+                for &byte in data_to_process.iter() {
                     hex_string.push_str(&format!("{:02X} ", byte));
-                    _byte_count += 1;
                 }
                 self.received_data.push_str(&hex_string);
+                self.received_data.push('\n'); 
             } else {
-                // ASCII显示模式
-                for (_i, &byte) in data_to_process.iter().enumerate() {  // 修改变量名
-                    if byte >= 32 && byte <= 126 {
-                        self.received_data.push(byte as char);
-                    } else if byte == b'\n' || byte == b'\r' {
-                        self.received_data.push(byte as char);
-                    } else {
-                        self.received_data.push('.');
-                    }
-                }
+                // 文本显示模式，支持汉字等 UTF-8 字符
+                let text = String::from_utf8_lossy(&data_to_process);
+                self.received_data.push_str(&text);
+                self.received_data.push('\n');                
             }
             
             // 记录日志
@@ -402,11 +444,31 @@ impl eframe::App for SerialAssistant {
         }
 
         // 自动发送逻辑
-        if self.auto_send && self.auto_send_active && self.port_handle.is_some() && 
+        if self.auto_send && self.auto_send_active && 
            self.last_send_time.elapsed().as_millis() as u64 >= self.auto_send_interval {
-            if let Some(port) = &self.port_handle {
+            
+            // TCP 模式的自动发送
+            if self.tcp_enabled && self.tcp_connected {
+                if let Some(tcp) = &self.tcp_stream {
+                    if let Ok(mut stream) = tcp.lock() {
+                        let data = if self.is_hex_send {
+                            utils::hex_to_bytes(&self.send_data)
+                        } else {
+                            self.send_data.as_bytes().to_vec()
+                        };
+                        
+                        println!("TCP发送数据: {:?}", data);
+                        if let Ok(written) = stream.write(&data) {
+                            self.bytes_sent += written;
+                            self.log_data_with_lock(&data, false);
+                            println!("TCP实际发送字节数: {}", written);
+                        }
+                    }
+                }
+            }
+            // 串口模式的自动发送
+            else if let Some(port) = &self.port_handle {
                 if let Ok(mut port) = port.lock() {
-                    // 打印原始输入数据
                     println!("原始输入: {}", self.send_data);
                     
                     let data = if self.is_hex_send {
@@ -415,7 +477,6 @@ impl eframe::App for SerialAssistant {
                         self.send_data.as_bytes().to_vec()
                     };
                     
-                    // 打印转换后的数据
                     println!("发送数据: {:?}", data);
                     println!("发送数据(HEX): {}", data.iter()
                         .map(|b| format!("{:02X}", b))
@@ -425,11 +486,11 @@ impl eframe::App for SerialAssistant {
                     if let Ok(written) = port.write(&data) {
                         self.bytes_sent += written;
                         self.log_data_with_lock(&data, false);
-                        // 打印实际发送的字节数
                         println!("实际发送字节数: {}", written);
                     }
                 }
             }
+            
             self.last_send_time = Instant::now();
             ctx.request_repaint_after(Duration::from_millis(self.auto_send_interval));
         }

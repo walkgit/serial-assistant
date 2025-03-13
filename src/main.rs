@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"] // 添加此行以避免启动控制台
+ #![windows_subsystem = "windows"] // 添加此行以避免启动控制台
 
 use walk_assistant::SerialAssistant;
 use egui::{ViewportBuilder, FontDefinitions, FontData, FontFamily};
