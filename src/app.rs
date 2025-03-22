@@ -156,6 +156,25 @@ impl SerialAssistant {
         }
     }
 
+     // 初始化Lua环境
+    pub fn init_lua(&mut self) {         
+        if self.lua_state.is_none() {
+            let lua = Lua::new();
+
+            // 尝试加载外部Lua脚本文件
+            if let Err(e) = lua.context(|ctx| {
+                let script_content = std::fs::read_to_string(&self.lua_script_path)
+                    .expect("无法读取Lua脚本文件");
+                ctx.load(&script_content).exec()
+            }) {
+                println!("Lua脚本加载失败: {}", e);
+            }
+            
+            self.lua_state = Some(lua);
+            println!("Lua环境初始化成功");
+        }
+    }
+
     pub fn open_port(&mut self) -> bool {
         // 检查是否选择了串口
         if self.selected_port.is_empty() {
@@ -264,32 +283,31 @@ impl SerialAssistant {
         
         // TCP模式和串口模式都可以使用波形显示功能
         if self.plot_visible {
-        // 使用Lua脚本解析数据帧
-        if let Some(lua) = &self.lua_state {
-            let mut frames_to_process = Vec::new(); // 创建一个临时缓冲区来存储帧
-        
-                if let Err(e) = lua.context(|ctx| {
-                    let frame_length: usize = ctx.globals().get("FRAME_LENGTH")?;
-                    println!("用户填写的帧长度: {}", frame_length);
+            // 使用Lua脚本解析数据帧
+            if let Some(lua) = &self.lua_state {
+                let mut frames_to_process = Vec::new(); // 创建一个临时缓冲区来存储帧
             
-                    // 检查是否有完整的数据帧
-                    while self.packet_buffer.len() >= frame_length {
-                        // 提取完整的帧并存储到临时缓冲区
-                        let frame = self.packet_buffer.drain(0..frame_length).collect::<Vec<u8>>();
-                        frames_to_process.push(frame);
+                    if let Err(e) = lua.context(|ctx| {
+                        let frame_length: usize = ctx.globals().get("FRAME_LENGTH")?;
+                        println!("用户填写的帧长度: {}", frame_length);
+                
+                        // 检查是否有完整的数据帧
+                        while self.packet_buffer.len() >= frame_length {
+                            // 提取完整的帧并存储到临时缓冲区
+                            let frame = self.packet_buffer.drain(0..frame_length).collect::<Vec<u8>>();
+                            frames_to_process.push(frame);
+                        }
+                        Ok::<(), rlua::Error>(())
+                    }) {
+                        println!("Lua脚本执行错误: {}", e);
                     }
-                    Ok::<(), rlua::Error>(())
-                }) {
-                    println!("Lua脚本执行错误: {}", e);
+                
+                // 在闭包外处理帧
+                for frame in frames_to_process {
+                    self.process_frame(&frame);
                 }
-            
-            // 在闭包外处理帧
-            for frame in frames_to_process {
-                self.process_frame(&frame);
-            }
             }
         }
-        
         // 缓冲区超过最大长度时清空（防止内存溢出）
         if self.packet_buffer.len() > 1024 {
             println!("缓冲区溢出，清空数据");

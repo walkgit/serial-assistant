@@ -57,6 +57,7 @@ pub fn render_ui(app: &mut SerialAssistant, ctx: &egui::Context) {
 
     // 波形显示窗口
     if app.plot_visible {
+        app.init_lua();//初始化脚本
         egui::Window::new("波形显示")
             .id(egui::Id::new("serial_wave_window"))
             .default_size([600.0, 400.0])

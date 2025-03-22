@@ -10,9 +10,8 @@ egui = "0.26"
 egui_plot = "0.26"
 serialport = "4.3.0"
 chrono = "0.4.34"
-base64 = "0.13.0"
-rfd = "0.5"
-image = "0.23.14"
+rfd = "0.15.3"
+image = "0.25.5"
 
 [build-dependencies]
 winres = "0.1"

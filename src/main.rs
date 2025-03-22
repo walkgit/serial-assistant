@@ -1,17 +1,17 @@
- #![windows_subsystem = "windows"] // 添加此行以避免启动控制台
+//  #![windows_subsystem = "windows"] // 添加此行以避免启动控制台
 
 use walk_assistant::SerialAssistant;
 use egui::{ViewportBuilder, FontDefinitions, FontData, FontFamily};
 use eframe::{NativeOptions, Result};
 use std::fs::read;
-use std::path::PathBuf;
-use std::sync::Arc; // 添加 Arc 导入
+// use std::path::PathBuf;
+// use std::sync::Arc; // 添加 Arc 导入
 
 // 定义常量
 const WINDOW_TITLE: &str = "串口助手";
 const WINDOW_SIZE: [f32; 2] = [1000.0, 620.0];
 const FONT_NAME: &str = "microsoft_yahei";
-const ICON_PATH: &str = "d:/A2025/Ai/serial-assistant/assets/icon.png"; // 使用绝对路径
+// const ICON_PATH: &str = "./assets/icon.png"; // 使用绝对路径
 
 fn main() -> Result<()> {
     // 使用条件编译选择字体路径
@@ -23,20 +23,20 @@ fn main() -> Result<()> {
     const FONT_PATH: &str = "/Library/Fonts/msyh.ttc";
     
     // 尝试加载图标
-    let icon_result = load_icon(ICON_PATH);
+    // let icon_result = load_icon(ICON_PATH);
     
     // 创建 ViewportBuilder
-    let mut viewport_builder = ViewportBuilder::default()
+    let viewport_builder = ViewportBuilder::default()
         .with_inner_size(WINDOW_SIZE)
         .with_decorations(true)
         .with_title(WINDOW_TITLE);
     
     // 如果图标加载成功，则设置图标
-    if let Ok(icon_data) = icon_result {
-        viewport_builder = viewport_builder.with_icon(Arc::new(icon_data));
-    } else if let Err(e) = &icon_result {
-        eprintln!("加载图标失败: {}", e);
-    }
+    // if let Ok(icon_data) = icon_result {
+    //     viewport_builder = viewport_builder.with_icon(Arc::new(icon_data));
+    // } else if let Err(e) = &icon_result {
+    //     eprintln!("加载图标失败: {}", e);
+    // }
 
     let native_options = NativeOptions {
         viewport: viewport_builder,
@@ -67,25 +67,25 @@ fn main() -> Result<()> {
 }
 
 // 加载图标函数
-fn load_icon(path: &str) -> std::result::Result<egui::IconData, Box<dyn std::error::Error>> {
-    let icon_path = PathBuf::from(path);
-    println!("尝试加载图标: {:?}", icon_path); // 添加日志以便调试
+// fn load_icon(path: &str) -> std::result::Result<egui::IconData, Box<dyn std::error::Error>> {
+//     let icon_path = PathBuf::from(path);
+//     println!("尝试加载图标: {:?}", icon_path); // 添加日志以便调试
     
-    let image = match image::open(icon_path) {
-        Ok(img) => img.into_rgba8(),
-        Err(e) => {
-            eprintln!("打开图片失败: {}", e);
-            return Err(Box::new(e));
-        }
-    };
+//     let image = match image::open(icon_path) {
+//         Ok(img) => img.into_rgba8(),
+//         Err(e) => {
+//             eprintln!("打开图片失败: {}", e);
+//             return Err(Box::new(e));
+//         }
+//     };
     
-    let (width, height) = image.dimensions();
-    println!("图标尺寸: {}x{}", width, height); // 添加尺寸信息
+//     let (width, height) = image.dimensions();
+//     println!("图标尺寸: {}x{}", width, height); // 添加尺寸信息
     
-    let rgba = image.into_raw();
-    Ok(egui::IconData {
-        rgba,
-        width,
-        height,
-    })
-}
+//     let rgba = image.into_raw();
+//     Ok(egui::IconData {
+//         rgba,
+//         width,
+//         height,
+//     })
+// }

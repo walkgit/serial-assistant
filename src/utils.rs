@@ -1,11 +1,3 @@
-// 将字节数组转换为十六进制字符串
-// 删除第一个 bytes_to_hex 函数，保留改进版本
-// pub fn bytes_to_hex(bytes: &[u8]) -> String {
-//     bytes.iter()
-//         .map(|b| format!("{:02X} ", b))
-//         .collect()
-// }
-
 // 将十六进制字符串转换为字节数组
 pub fn hex_to_bytes(hex_str: &str) -> Vec<u8> {
     hex_str

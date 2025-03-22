@@ -1,5 +1,3 @@
-// 修复未使用的导入
-// use crate::utils;  // 注释掉这行
 use serialport::SerialPort;
 use std::sync::{Arc, Mutex};
 use std::thread;
