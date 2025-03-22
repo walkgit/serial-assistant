@@ -7,7 +7,8 @@ use serialport::{DataBits};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::io::{Read, Write};  
-use rlua::Lua;
+use mlua::Lua;
+
 use crate::serial::SerialPortHandle;
 // 在 SerialAssistant 结构体中添加新字段
 pub struct SerialAssistant {
@@ -161,12 +162,10 @@ impl SerialAssistant {
         if self.lua_state.is_none() {
             let lua = Lua::new();
 
+            let script_content = std::fs::read_to_string(&self.lua_script_path)
+                .expect("无法读取Lua脚本文件");
             // 尝试加载外部Lua脚本文件
-            if let Err(e) = lua.context(|ctx| {
-                let script_content = std::fs::read_to_string(&self.lua_script_path)
-                    .expect("无法读取Lua脚本文件");
-                ctx.load(&script_content).exec()
-            }) {
+            if let Err(e) = lua.load(&script_content).exec() {
                 println!("Lua脚本加载失败: {}", e);
             }
             
@@ -274,7 +273,7 @@ impl SerialAssistant {
         println!("TCP断开连接");
     }
 
-    pub fn process_received_data(&mut self, data: &[u8]) {
+    pub fn process_received_data(&mut self, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         // 将数据添加到缓冲区
         self.packet_buffer.extend_from_slice(data);
         self.bytes_received += data.len();        
@@ -283,83 +282,75 @@ impl SerialAssistant {
         
         // TCP模式和串口模式都可以使用波形显示功能
         if self.plot_visible {
-            // 使用Lua脚本解析数据帧
             if let Some(lua) = &self.lua_state {
-                let mut frames_to_process = Vec::new(); // 创建一个临时缓冲区来存储帧
+                let mut frames_to_process = Vec::new();
             
-                    if let Err(e) = lua.context(|ctx| {
-                        let frame_length: usize = ctx.globals().get("FRAME_LENGTH")?;
-                        println!("用户填写的帧长度: {}", frame_length);
-                
-                        // 检查是否有完整的数据帧
-                        while self.packet_buffer.len() >= frame_length {
-                            // 提取完整的帧并存储到临时缓冲区
-                            let frame = self.packet_buffer.drain(0..frame_length).collect::<Vec<u8>>();
-                            frames_to_process.push(frame);
-                        }
-                        Ok::<(), rlua::Error>(())
-                    }) {
-                        println!("Lua脚本执行错误: {}", e);
+                if let Ok(frame_length) = lua.globals().get::<usize>("FRAME_LENGTH") {
+                    println!("用户填写的帧长度: {}", frame_length);
+            
+                    // 检查是否有完整的数据帧
+                    while self.packet_buffer.len() >= frame_length {
+                        let frame = self.packet_buffer.drain(0..frame_length).collect::<Vec<u8>>();
+                        frames_to_process.push(frame);
                     }
-                
-                // 在闭包外处理帧
-                for frame in frames_to_process {
-                    self.process_frame(&frame);
+                    
+                    for frame in frames_to_process {
+                        self.process_frame(&frame)?;
+                    }
                 }
             }
         }
+        
         // 缓冲区超过最大长度时清空（防止内存溢出）
         if self.packet_buffer.len() > 1024 {
             println!("缓冲区溢出，清空数据");
             self.packet_buffer.clear();
         }
+        
+        Ok(())
     }
 
-    fn process_frame(&mut self, frame: &[u8]) {
+    fn process_frame(&mut self, frame: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lua) = &self.lua_state {
-            if let Err(e) = lua.context(|ctx| {
-                let parse_fn = ctx.globals().get::<_, rlua::Function>("parse_waveform")?;
-                let lua_data = ctx.create_table()?;
+            let parse_fn = lua.globals().get::<mlua::Function>("parse_waveform")?;
+            let lua_data = lua.create_table()?;
        
-                for (i, &byte) in frame.iter().enumerate() {
-                    lua_data.set(i + 1, byte)?;
-                }
-                
-                let result: rlua::Result<Option<rlua::Table>> = parse_fn.call(lua_data);
-                
-                if let Ok(Some(result_table)) = result {
-                    if let Ok(channel) = result_table.get::<_, Option<u8>>("channel") {
-                        if let Some(channel) = channel {
-                            let channel: usize = channel as usize;
+            for (i, &byte) in frame.iter().enumerate() {
+                lua_data.set(i + 1, byte)?;
+            }
+            
+            let result: mlua::Result<Option<mlua::Table>> = parse_fn.call(lua_data);
+            
+            if let Ok(Some(result_table)) = result {
+                if let Ok(channel) = result_table.get::<Option<u8>>("channel") {
+                    if let Some(channel) = channel {
+                        let channel: usize = channel as usize;
+                        
+                        if channel <= 9 {
+                            let points: mlua::Table = result_table.get("points")?;
                             
-                            if channel <= 9 {
-                                let points: rlua::Table = result_table.get("points")?;
+                            if channel < self.plot_data_per_channel.len() {
+                                for y in points.sequence_values::<f64>() {
+                                    if let Ok(y_value) = y {
+                                        let x_value = self.plot_data_per_channel[channel].len() as f64;
+                                        println!("通道 {}: x={}, y={}", channel, x_value, y_value);
+                                        self.plot_data_per_channel[channel].push((x_value, y_value as f64));
+                                    }
+                                }
                                 
-                                if channel < self.plot_data_per_channel.len() {
-                                    for y in points.sequence_values::<f64>() {
-                                        if let Ok(y_value) = y {
-                                            let x_value = self.plot_data_per_channel[channel].len() as f64;
-                                            println!("通道 {}: x={}, y={}", channel, x_value, y_value);
-                                            self.plot_data_per_channel[channel].push((x_value, y_value as f64));
-                                        }
-                                    }
-                                    
-                                    // 保持数据点数量限制
-                                    while self.plot_data_per_channel[channel].len() > 1000 {
-                                        self.plot_data_per_channel[channel].remove(0);
-                                    }
+                                // 保持数据点数量限制
+                                while self.plot_data_per_channel[channel].len() > 1000 {
+                                    self.plot_data_per_channel[channel].remove(0);
                                 }
                             }
                         }
-                    } else {
-                        println!("通道号解析失败: 未返回有效的通道号");
                     }
+                } else {
+                    println!("通道号解析失败: 未返回有效的通道号");
                 }
-                Ok::<(), rlua::Error>(())
-            }) {
-                println!("Lua脚本执行错误: {}", e);
             }
         }
+        Ok(())
     }
 }
 
@@ -396,7 +387,7 @@ impl eframe::App for SerialAssistant {
             }
             
             if !data_to_process.is_empty() {
-                self.process_received_data(&data_to_process);
+                let _  = self.process_received_data(&data_to_process);
             }
         }
         
@@ -420,7 +411,7 @@ impl eframe::App for SerialAssistant {
         
         // 然后处理数据
         if !data_to_process.is_empty() {
-            self.process_received_data(&data_to_process);
+            let _ = self.process_received_data(&data_to_process);
             
             // 更新缓冲区
             self.received_buffer.extend(&data_to_process);

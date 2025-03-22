@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rlua = "0.19.4"
+# rlua = "0.19.4"
+mlua = { version = "0.10.3", features = ["lua54", "vendored"] }
 eframe = "0.26"
 egui = "0.26"
 egui_plot = "0.26"
