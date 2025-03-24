@@ -1,15 +1,22 @@
 use crate::app::SerialAssistant;
+use crate::utils;
 use eframe::egui;
-use std::time::Duration;
-use egui_plot::{Line, Plot, PlotPoints, Legend};  // 添加 Legend 导入
-use std::io::Write;  // 添加导入
-use rfd::FileDialog;  // 添加导入
+use egui::IconData;
+use std::{time::Duration};
+use egui_plot::{Line, Plot, PlotPoints, Legend};
+use std::io::Write;
+use rfd::FileDialog; 
 
 pub fn render_ui(app: &mut SerialAssistant, ctx: &egui::Context) {
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::CentralPanel::default().show(ctx, |ui| {  
+        // 捕获鼠标位置
+        if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
+            app.pointer_pos = pointer_pos;
+        }
+
         let available_size = ui.available_size();
         
-        ui.vertical(|ui| {
+        ui.vertical(|ui| {            
             // 顶部控制区域
             render_top_controls(app, ui, available_size);
 
@@ -52,84 +59,48 @@ pub fn render_ui(app: &mut SerialAssistant, ctx: &egui::Context) {
             app.update_status();
             app.update_transfer_rate();
             ui.label(&app.status_message);
+            ui.separator();
+            egui::warn_if_debug_build(ui);
+            ui.label(format!(
+                "CPU usage: {:.2} ms / frame; FPS: {:.1}",
+                1e3 * app.frame_history.mean_frame_time(),
+                app.frame_history.fps()
+            ));
+            ui.separator();
+            ui.label(format!(
+                "x:{}_y:{}",
+                app.pointer_pos.x,
+                app.pointer_pos.y
+            ));
         });
     });
 
     // 波形显示窗口
     if app.plot_visible {
         app.init_lua();//初始化脚本
-        egui::Window::new("波形显示")
-            .id(egui::Id::new("serial_wave_window"))
-            .default_size([600.0, 400.0])
-            .resizable(true)
-            .collapsible(true)
-            .show(ctx, |ui| {
-                // 计算所有通道的数据范围
-                let mut min_y = f64::INFINITY;
-                let mut max_y = f64::NEG_INFINITY;
-                
-                for plot_data in &app.plot_data_per_channel {
-                    if !plot_data.is_empty() {
-                        let (_, local_min) = plot_data.iter()
-                            .map(|(_, y)| *y)
-                            .fold((0.0, f64::INFINITY), |acc, y| (y, acc.1.min(y)));
-                        let (_, local_max) = plot_data.iter()
-                            .map(|(_, y)| *y)
-                            .fold((0.0, f64::NEG_INFINITY), |acc, y| (y, acc.1.max(y)));
-                        
-                        min_y = min_y.min(local_min);
-                        max_y = max_y.max(local_max);
+
+        ctx.show_viewport_immediate (
+            egui::ViewportId(egui::Id::new("serial_wave_window_id")),
+            egui::ViewportBuilder::default()
+                .with_title("波形显示")
+                .with_inner_size([600.0, 400.0])
+                .with_icon(create_wave_icon()),
+                |ctx, class| {
+                    if class == egui::ViewportClass::Embedded {
+                        // Not a real viewport
+                        egui::Window::new("error information")
+                            .id(egui::Id::new("error information"))
+                            .show(ctx, |ui| {
+                                ui.label("This egui integration does not support multiple viewports");
+                            });
+                    } else {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            wave_viewport_content(app, ui, ctx);
+                        });
                     }
                 }
-                
-                // 添加边距，使显示更美观
-                let range = if max_y > min_y { max_y - min_y } else { 1.0 };
-                let margin = range * 0.1;
-                let y_min = min_y - margin;
-                let y_max = max_y + margin;
+        );
 
-                Plot::new("serial_wave_plot")
-                    .id(egui::Id::new("serial_wave_plot_area"))
-                    .view_aspect(2.0)
-                    .include_y(y_min)  // 使用计算出的范围
-                    .include_y(y_max)  // 使用计算出的范围
-                    .show_axes([true, true])
-                    .show_grid([true, true])
-                    .legend(Legend::default())
-                    .allow_zoom(true)
-                    .allow_drag(true)
-                    .show(ui, |plot_ui| {
-                        for (channel, plot_data) in app.plot_data_per_channel.iter().enumerate() {
-                            if !plot_data.is_empty() {
-                                let points: Vec<[f64; 2]> = plot_data
-                                    .iter()
-                                    .map(|(x, y)| [*x, *y])
-                                    .collect();
-                                
-                                // 根据通道号选择不同的颜色
-                                let color = match channel {
-                                    0 => egui::Color32::from_rgb(255, 0, 0),   // 红色
-                                    1 => egui::Color32::from_rgb(0, 255, 0),   // 绿色
-                                    2 => egui::Color32::from_rgb(0, 0, 255),   // 蓝色
-                                    3 => egui::Color32::from_rgb(255, 255, 0), // 黄色
-                                    4 => egui::Color32::from_rgb(255, 0, 255), // 紫色
-                                    5 => egui::Color32::from_rgb(0, 255, 255), // 青色
-                                    6 => egui::Color32::from_rgb(128, 0, 128), // 深紫色
-                                    7 => egui::Color32::from_rgb(128, 128, 0), // 橄榄色
-                                    8 => egui::Color32::from_rgb(0, 128, 128), // 深青色
-                                    9 => egui::Color32::from_rgb(128, 128, 128), // 灰色
-                                    _ => egui::Color32::from_rgb(100, 200, 100), // 默认颜色
-                                };
-                                
-                                let line = Line::new(PlotPoints::from_iter(points))
-                                    .color(color)
-                                    .name(format!("通道 {}", channel))
-                                    .width(2.0);
-                                plot_ui.line(line);
-                            }
-                        }
-                    });
-            });
     }
 
     // 帮助窗口
@@ -173,8 +144,13 @@ pub fn render_ui(app: &mut SerialAssistant, ctx: &egui::Context) {
 
 fn render_top_controls(app: &mut SerialAssistant, ui: &mut egui::Ui, available_size: egui::Vec2) {
     ui.horizontal_wrapped(|ui| {
+        
         ui.set_min_width(available_size.x);
         
+        egui::widgets::global_theme_preference_switch(ui);
+
+        ui.separator();
+
         // 添加TCP/串口切换
         ui.horizontal(|ui| {
             ui.radio_value(&mut app.tcp_enabled, false, "串口模式");
@@ -314,21 +290,25 @@ fn render_send_area(app: &mut SerialAssistant, ui: &mut egui::Ui, ctx: &egui::Co
             // 顶部控制区域
             ui.horizontal(|ui| {
                 ui.label("发送区域");
-                ui.checkbox(&mut app.is_hex_send, "HEX发送");
-                
-                // 添加对自动发送状态的处理
-                let auto_send_before = app.auto_send;
-                ui.checkbox(&mut app.auto_send, "自动发送");
-                // 如果取消了自动发送，也要重置激活状态
-                if auto_send_before && !app.auto_send {
-                    app.auto_send_active = false;
+                if ui.checkbox(&mut app.is_hex_send, "HEX发送").clicked() {
+                    if app.is_hex_send {
+                        app.send_data = utils::ascii_to_hex(&app.send_data);
+                        println!("HEX发送{}", app.send_data);
+                    }
+                    else {
+                        app.send_data = utils::hex_to_ascii(&app.send_data);
+                        println!("ASCII发送{}", app.send_data);
+                    }
                 }
-                
+            
+                // 添加对自动发送状态的处理
+                ui.checkbox(&mut app.auto_send, "自动发送");
+               
                 if app.auto_send {
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut app.auto_send_interval)
                             .speed(100)
-                            .clamp_range(1..=600000)
+                            .range(1..=600000)
                             .prefix("间隔: ")
                             .suffix("ms"));
                     });
@@ -340,7 +320,7 @@ fn render_send_area(app: &mut SerialAssistant, ui: &mut egui::Ui, ctx: &egui::Co
             
             // 添加滚动区域
             egui::ScrollArea::vertical()
-                .id_source("send_area_scroll")  // 为发送区域添加唯一的ID
+                .id_salt("send_area_scroll")  // 为发送区域添加唯一的ID
                 .max_height(available_height - 100.0)
                 .show(ui, |ui| {
                     let text_edit = egui::TextEdit::multiline(&mut app.send_data)
@@ -351,7 +331,22 @@ fn render_send_area(app: &mut SerialAssistant, ui: &mut egui::Ui, ctx: &egui::Co
             
             // 底部按钮区域
             ui.horizontal(|ui| {
-                if ui.button("发送").clicked() {
+                let bt_one_label = "发送";
+                let bt_auto_label = "自动发送";
+                let bt_label = if app.auto_send_active {
+                    bt_auto_label 
+                }
+                else{
+                    bt_one_label
+                };
+                if ui.button(bt_label).clicked() {
+                    //如果当前是发送状态，停止自动发送
+                    if app.auto_send_active  {
+                        app.auto_send = false;
+                        app.auto_send_active = false;
+                        ui.ctx().request_repaint();
+                    }
+
                     let data = if app.is_hex_send {
                         // 将输入按空格分割，解析每个十六进制数
                         let hex_values: Vec<u8> = app.send_data
@@ -413,8 +408,20 @@ fn render_receive_area(app: &mut SerialAssistant, ui: &mut egui::Ui, _ctx: &egui
             // 顶部控制区域
             ui.horizontal(|ui| {
                 ui.label("接收区域");
-                ui.checkbox(&mut app.is_hex_display, "HEX显示");
-                ui.checkbox(&mut app.plot_visible, "波形显示");
+                if ui.checkbox(&mut app.is_hex_display, "HEX显示").clicked() {
+                    if app.is_hex_display {
+                        app.received_data = utils::ascii_to_hex(&app.received_data);
+                    } else {
+                        app.received_data = utils::hex_to_ascii(&app.received_data);
+                    }
+                }
+
+                if ui.checkbox(&mut app.plot_visible, "波形显示").clicked() {
+                    if app.plot_visible {
+                        app.packet_buffer.clear();
+                    } 
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("已接收: {} 字节", app.bytes_received));
                 });
@@ -422,7 +429,7 @@ fn render_receive_area(app: &mut SerialAssistant, ui: &mut egui::Ui, _ctx: &egui
             
             // 接收数据显示区域
             egui::ScrollArea::vertical()
-                .id_source("receive_area_scroll")  // 为接收区域添加唯一的ID
+                .id_salt("receive_area_scroll")  // 为接收区域添加唯一的ID
                 .max_height(available_height - 100.0)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
@@ -471,4 +478,124 @@ fn render_receive_area(app: &mut SerialAssistant, ui: &mut egui::Ui, _ctx: &egui
     });
 }
 
+fn wave_viewport_content(app: &mut SerialAssistant, ui: &mut egui::Ui, _ctx: &egui::Context) {    
+    let available_size = ui.available_size();
+    // 确保高度和宽度不为负值
+    let height = available_size.y.max(200.0);
+    let width = available_size.x.max(300.0);
 
+        // 计算所有通道的数据范围
+    let mut min_y = f64::MAX;
+    let mut max_y = f64::MIN;
+
+    for plot_data in &app.plot_data_per_channel {
+        if !plot_data.is_empty() {
+            let (_, local_min) = plot_data.iter()
+            .map(|(_, y)| *y)
+            .fold((0.0, f64::INFINITY), |acc, y| (y, acc.1.min(y)));
+            let (_, local_max) = plot_data.iter()
+            .map(|(_, y)| *y)
+            .fold((0.0, f64::NEG_INFINITY), |acc, y| (y, acc.1.max(y)));
+
+            min_y = min_y.min(local_min);
+            max_y = max_y.max(local_max);
+        }
+    }
+
+    // 设置默认范围并处理边界情况
+    if min_y == f64::MAX || max_y == f64::MIN {
+        min_y = -1.0;
+        max_y = 1.0;
+    }
+
+    // 添加边距，使显示更美观
+    let range = if max_y > min_y { (max_y - min_y).max(1e-6) } else { 1.0 };
+    let margin = range * 0.1;
+    let y_min = min_y - margin;
+    let y_max = max_y + margin;
+
+    // 绘制波形
+    Plot::new("serial_wave_plot")
+    .id(egui::Id::new("serial_wave_plot_area"))
+    .view_aspect(2.0)
+    .include_y(y_min) 
+    .include_y(y_max) 
+    .show_axes([true, true])
+    .show_grid([true, true])
+    .legend(Legend::default())
+    .allow_zoom(true)
+    .allow_drag(true)
+    .height(height)
+    .width(width-20.0)
+    .show(ui, |plot_ui| {
+        for (channel, plot_data) in app.plot_data_per_channel.iter().enumerate() {
+            if !plot_data.is_empty() {
+                let points: Vec<[f64; 2]> = plot_data
+                    .iter()
+                    .map(|(x, y)| [*x, *y])
+                    .collect();
+                
+                // 根据通道号选择不同的颜色
+                let color = match channel {
+                    0 => egui::Color32::from_rgb(255, 0, 0),   // 红色
+                    1 => egui::Color32::from_rgb(0, 255, 0),   // 绿色
+                    2 => egui::Color32::from_rgb(0, 0, 255),   // 蓝色
+                    3 => egui::Color32::from_rgb(255, 255, 0), // 黄色
+                    4 => egui::Color32::from_rgb(255, 0, 255), // 紫色
+                    5 => egui::Color32::from_rgb(0, 255, 255), // 青色
+                    6 => egui::Color32::from_rgb(128, 0, 128), // 深紫色
+                    7 => egui::Color32::from_rgb(128, 128, 0), // 橄榄色
+                    8 => egui::Color32::from_rgb(0, 128, 128), // 深青色
+                    9 => egui::Color32::from_rgb(128, 128, 128), // 灰色
+                    _ => egui::Color32::from_rgb(100, 200, 100), // 默认颜色
+                };
+                
+                let line = Line::new(PlotPoints::from_iter(points))
+                    .color(color)
+                    .name(format!("通道 {}", channel))
+                    .width(2.0);
+                plot_ui.line(line);
+            }
+        }
+    });
+
+    // 处理关闭请求
+    if ui.input(|i| i.viewport().close_requested()) {
+        app.plot_visible = false;
+    }
+
+     // 捕获鼠标位置
+     if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
+        app.pointer_pos = pointer_pos;
+    }
+}
+
+
+// 添加创建图标的函数
+fn create_wave_icon() -> IconData {
+    let width = 64;
+    let height = 64;
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    
+    // 创建一个正弦波形图标
+    for y in 0..height {
+        for x in 0..width {//波形周期从 4π
+            let wave = ((x as f32 / width as f32 * 4.0 * std::f32::consts::PI).sin() * 0.5 + 0.5) * height as f32;
+            let is_wave = (y as f32 - wave).abs() < 5.0;//线条宽度从 5.0
+            
+            //纯蓝色波形（RGB: 0,0,255）
+            rgba.extend_from_slice(&[
+                if is_wave { 0 } else { 255 },    // R
+                if is_wave { 0 } else { 255 },    // G
+                if is_wave { 255 } else { 255 },  // B
+                255,                              // A
+            ]);
+        }
+    }
+    
+    IconData {
+        rgba,
+        width: width as _,
+        height: height as _,
+    }
+}

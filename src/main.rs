@@ -1,4 +1,4 @@
-//  #![windows_subsystem = "windows"] // 添加此行以避免启动控制台
+ #![windows_subsystem = "windows"] // 添加此行以避免启动控制台
 
 use walk_assistant::SerialAssistant;
 use egui::{ViewportBuilder, FontDefinitions, FontData, FontFamily};
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
             if let Ok(font_data) = read(FONT_PATH) {
                 fonts.font_data.insert(
                     FONT_NAME.to_owned(),
-                    FontData::from_owned(font_data),
+                    FontData::from_owned(font_data).into(),
                 );
                 fonts.families
                     .get_mut(&FontFamily::Proportional)
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
                 cc.egui_ctx.set_fonts(fonts);
             }
             
-            Box::new(SerialAssistant::default())
+            Ok(Box::new(SerialAssistant::default()))
         }),
     )
 }

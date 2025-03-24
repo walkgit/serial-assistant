@@ -36,7 +36,7 @@ pub fn open_port(
         .data_bits(data_bits)
         .stop_bits(stop_bits)
         .parity(parity)
-        .timeout(Duration::from_millis(10))
+        .timeout(Duration::from_millis(100))
         .open()
     {
         let port_handle = Arc::new(Mutex::new(port));

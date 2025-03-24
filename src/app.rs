@@ -1,6 +1,7 @@
-// 修复导入
 use crate::ui;
 use crate::utils;
+use crate::frame_history;
+use egui::Pos2;
 use rfd::FileDialog;
 use eframe::egui;
 use serialport::{DataBits};
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::io::{Read, Write};  
 use mlua::Lua;
-
+use sysinfo::System;
 use crate::serial::SerialPortHandle;
 // 在 SerialAssistant 结构体中添加新字段
 pub struct SerialAssistant {
@@ -30,24 +31,25 @@ pub struct SerialAssistant {
     pub last_send_time: Instant,
     pub bytes_received: usize,
     pub bytes_sent: usize,
+    pub bytes_received_last: usize,
+    pub bytes_sent_last: usize,
     pub log_enabled: bool,
     pub log_file: Option<String>,
     pub received_data_shared: Arc<Mutex<String>>,
     pub received_buffer: Vec<u8>,
     pub auto_scroll: bool,
-    pub show_raw_data: bool,
     pub status_message: String,
     pub last_stats_update: Instant,
-    pub bytes_per_second: f32,
+    pub bytes_send_per_second: f32,
+    pub bytes_received_per_second: f32,
     pub packet_buffer: Vec<u8>,
     pub plot_data: Vec<(f64, f64)>,
     pub plot_visible: bool,
-    pub plot_start_time: Option<f64>,  // 添加起始时间
-    pub plot_time_span: f64,           // 添加时间跨度
     pub received_bytes: Vec<u8>,
     pub lua_script_path: String,  // 添加一个字段来存储Lua文件的路径
     pub lua_state: Option<Lua>,
     pub plot_data_per_channel: Vec<Vec<(f64, f64)>>,  // 添加一个字段来存储每个通道的绘图数据
+    pub plot_data_per_channel_x: Vec<usize>,  
     pub tcp_enabled: bool,
     pub tcp_address: String,
     pub tcp_port: String,
@@ -55,6 +57,10 @@ pub struct SerialAssistant {
     pub tcp_connected: bool,
     pub show_help: bool, 
     pub custom_baud_text: String,
+    pub frame_history: frame_history::FrameHistory,
+    pub pointer_pos: Pos2,
+    pub sys: System,
+    pub last_cpu_usage: f32,
 }
 
 impl Default for SerialAssistant {
@@ -78,22 +84,23 @@ impl Default for SerialAssistant {
             last_send_time: Instant::now(),
             bytes_received: 0,
             bytes_sent: 0,
+            bytes_received_last: 0,
+            bytes_sent_last: 0,
             log_enabled: false,
             log_file: None,
             received_data_shared: Arc::new(Mutex::new(String::new())),
             received_buffer: Vec::new(),
             auto_scroll: true,
-            show_raw_data: false,
             status_message: String::new(),
             last_stats_update: Instant::now(),
-            bytes_per_second: 0.0,
+            bytes_send_per_second: 0.0,
+            bytes_received_per_second: 0.0,
             packet_buffer: Vec::new(),
             plot_data: Vec::with_capacity(1000),
             plot_visible: false,
-            plot_start_time: None,
-            plot_time_span: 10.0,  // 默认显示10秒数据
-            received_bytes: Vec::new(),  // 添加这一行
+            received_bytes: Vec::new(),
             plot_data_per_channel: vec![Vec::with_capacity(1000); 10],
+            plot_data_per_channel_x: vec![0; 10],
             lua_script_path: String::from("config/waveform.lua"),
             lua_state: None,
             tcp_enabled: false,
@@ -102,26 +109,38 @@ impl Default for SerialAssistant {
             tcp_stream: None,
             tcp_connected: false,
             show_help: false, 
-            custom_baud_text: String::from("256000")
+            custom_baud_text: String::from("256000"),
+            frame_history: frame_history::FrameHistory::default(),
+            pointer_pos: Pos2::new(0.0, 0.0),
+            sys: System::new_all(),
+            last_cpu_usage: 0.0,
         }
     }
 }
 
 impl SerialAssistant {
     // 更新状态信息
-    pub fn update_status(&mut self) {         
+    pub fn update_status(&mut self) {     
+        // self.sys.refresh_all();
+        // for (i, cpu) in self.sys.cpus().iter().enumerate() {
+        //     println!("{}-{}%", i, cpu.cpu_usage());
+        // }
+        // println!("{:?}{:?}{:?}{:?}", System::host_name(), System::cpu_arch(), System::kernel_version(), System::os_version());
+            
         if self.tcp_enabled == true {
-            self.status_message = format!("串口: {} {}|状态: {}| 收发速率: {:.1} KB/s",
+            self.status_message = format!("串口: {} {}|状态: {}| 收速率: {:.1} KB/s| 发速率: {:.1} KB/s",
             self.tcp_address,
             self.tcp_port,
             if self.tcp_connected { "已连接" } else { "未连接" },
-            self.bytes_per_second / 1024.0);           
+            self.bytes_send_per_second / 1024.0,
+            self.bytes_received_per_second / 1024.0);           
         } else {
-            self.status_message = format!("串口: {}|状态: {}| 波特率: {} | 收发速率: {:.1} KB/s",
+            self.status_message = format!("串口: {}|状态: {}| 波特率: {} | 收速率: {:.1} KB/s| 发速率: {:.1} KB/s",
             self.selected_port,
             if self.port_handle.is_some() { "已打开" } else { "未打开" },
             self.selected_baud,
-            self.bytes_per_second / 1024.0);
+            self.bytes_send_per_second / 1024.0,
+            self.bytes_received_per_second / 1024.0);   
         }        
     }
 
@@ -129,8 +148,12 @@ impl SerialAssistant {
     pub fn update_transfer_rate(&mut self) {
         let elapsed = self.last_stats_update.elapsed().as_secs_f32();
         if elapsed >= 1.0 {
-            self.bytes_per_second = (self.bytes_received + self.bytes_sent) as f32 / elapsed;
+            self.bytes_send_per_second = (self.bytes_sent - self.bytes_sent_last) as f32 / elapsed;
+            self.bytes_received_per_second = (self.bytes_received - self.bytes_received_last) as f32 / elapsed;
             self.last_stats_update = Instant::now();
+
+            self.bytes_received_last = self.bytes_received ;
+            self.bytes_sent_last = self.bytes_sent;
         }
     }
 
@@ -242,7 +265,8 @@ impl SerialAssistant {
             // 重置相关状态
             self.bytes_received = 0;
             self.bytes_sent = 0;
-            self.bytes_per_second = 0.0;
+            self.bytes_send_per_second = 0.0;
+            self.bytes_received_per_second = 0.0;
             self.packet_buffer.clear();
             self.received_buffer.clear();
             
@@ -332,15 +356,20 @@ impl SerialAssistant {
                             if channel < self.plot_data_per_channel.len() {
                                 for y in points.sequence_values::<f64>() {
                                     if let Ok(y_value) = y {
-                                        let x_value = self.plot_data_per_channel[channel].len() as f64;
+                                        // let x_value = self.plot_data_per_channel[channel].len() as f64;
+                                        self.plot_data_per_channel_x[channel] += 1;
+                                        let x_value = self.plot_data_per_channel_x[channel] as f64;
                                         println!("通道 {}: x={}, y={}", channel, x_value, y_value);
                                         self.plot_data_per_channel[channel].push((x_value, y_value as f64));
                                     }
                                 }
                                 
                                 // 保持数据点数量限制
-                                while self.plot_data_per_channel[channel].len() > 1000 {
-                                    self.plot_data_per_channel[channel].remove(0);
+                                while self.plot_data_per_channel[channel].len() > 950 {
+                                    // self.plot_data_per_channel[channel].remove(0);
+                                    let len = self.plot_data_per_channel[channel].len();
+                                    let end = len - 950;
+                                    self.plot_data_per_channel[channel].drain(0..end);
                                 }
                             }
                         }
@@ -355,7 +384,11 @@ impl SerialAssistant {
 }
 
 impl eframe::App for SerialAssistant {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        //统计帧率
+        self.frame_history
+            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
+
         let mut data_to_process = Vec::new();
         
         // 处理TCP数据接收

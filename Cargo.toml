@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# rlua = "0.19.4"
 mlua = { version = "0.10.3", features = ["lua54", "vendored"] }
-eframe = "0.26"
-egui = "0.26"
-egui_plot = "0.26"
+eframe = "0.31.1"
+egui = "0.31.1"
+egui_plot = "0.31.0"
 serialport = "4.3.0"
 chrono = "0.4.34"
 rfd = "0.15.3"
 image = "0.25.5"
+sysinfo = "0.33.1"
 
 [build-dependencies]
 winres = "0.1"
